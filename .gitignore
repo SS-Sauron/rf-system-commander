@@ -1,0 +1,27 @@
+# ESP-IDF build output
+build/
+sdkconfig
+sdkconfig.old
+*.pyc
+*.o
+*.d
+*.elf
+*.bin
+*.map
+
+# IDE / editor
+.vscode/
+.idea/
+*.swp
+*~
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# Python virtual env (if any)
+venv/
+.venv/
+
+# Local configuration overrides
+my_config.mk

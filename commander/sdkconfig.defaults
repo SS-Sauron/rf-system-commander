@@ -1,0 +1,68 @@
+# commander/sdkconfig.defaults
+#
+# Baseline stability configuration for the Commander ESP32.
+# These settings are applied before idf.py generates sdkconfig.
+# Project-specific Kconfig overrides take precedence.
+#
+# ---- Decision log (cross-reference with architecture analysis) ----
+# - No CONFIG_ESP32_WIFI_SW_COEXIST_ENABLE: radios are serialised in
+#   firmware; Wi-Fi and BT are never initialised simultaneously.
+# - Bluedroid classic only: NimBLE is not enabled. BLE support is
+#   explicitly disabled to avoid the NimBLE duplicate-filter heap
+#   growth bug described in the scanner analysis.
+# - Core dump ENABLED during development: disable only for production
+#   (see Stage C7 security hardening).
+# ------------------------------------------------------------------
+
+# ---- Compiler & assertion safety ---------------------------------
+CONFIG_COMPILER_OPTIMIZATION_PERF=y
+CONFIG_COMPILER_OPTIMIZATION_ASSERTION_LEVEL=2
+
+# ---- Memory diagnostics ------------------------------------------
+# Light heap poisoning: detects use-after-free and double-free at
+# low runtime cost. Upgrade to COMPREHENSIVE for targeted debugging.
+CONFIG_HEAP_POISONING_LIGHT=y
+
+# ---- Task Watchdog Timer -----------------------------------------
+CONFIG_ESP_TASK_WDT_EN=y
+CONFIG_ESP_TASK_WDT_TIMEOUT_S=5
+CONFIG_ESP_TASK_WDT_CHECK_IDLE_TASK_CPU0=y
+CONFIG_ESP_TASK_WDT_CHECK_IDLE_TASK_CPU1=y
+
+# ---- UART --------------------------------------------------------
+# ISR handler in IRAM: prevents UART data loss during flash cache
+# misses (e.g. during NVS writes or OTA). Required for the hardened
+# UART driver implemented at Stage C1.
+CONFIG_UART_ISR_IN_IRAM=y
+
+# ---- NVS ---------------------------------------------------------
+CONFIG_NVS_FLASH_VERIFY_ERASE=y
+
+# ---- Bluetooth: Bluedroid Classic only ---------------------------
+# Bluedroid is the stack for AVRCP controller mode (Stage C6).
+# BLE (both Bluedroid BLE and NimBLE) is disabled — the commander
+# has no BLE use-case. This saves ~60 KB of RAM vs. a dual-mode build.
+#
+# ACL_CONNECTIONS=1: the commander connects to exactly one speaker
+# at a time. Lowering from the default of 4 saves ~40 KB of RAM in
+# the Bluedroid connection management structures.
+CONFIG_BT_ENABLED=y
+CONFIG_BT_BLUEDROID_ENABLED=y
+CONFIG_BT_CLASSIC_ENABLED=y
+CONFIG_BT_BLE_ENABLED=n
+# CONFIG_BT_NIMBLE_ENABLED is not set (NimBLE not used on commander)
+CONFIG_BT_ACL_CONNECTIONS=1
+
+# NOTE: AVRCP-specific Kconfig (CONFIG_BT_AVRCP_CT_ENABLE etc.) will
+# be added at Stage C6 when bt_media_action.c is implemented, once
+# the exact symbol names are confirmed against the target ESP-IDF version.
+
+# ---- Core dump: enabled for development --------------------------
+# Disable and enable Secure Boot V2 at Stage C7 for production.
+CONFIG_ESP_COREDUMP_ENABLE_TO_UART=y
+CONFIG_ESP_COREDUMP_DATA_FORMAT_ELF=y
+CONFIG_ESP_COREDUMP_CHECKSUM_CRC32=y
+
+# ---- Adding custom partitions ------------------------------------
+CONFIG_PARTITION_TABLE_CUSTOM=y
+CONFIG_PARTITION_TABLE_CUSTOM_FILENAME="partitions.csv"

@@ -1,0 +1,152 @@
+# commander/Kconfig.projbuild
+#
+# Commander project configuration menu.
+# All CONFIG_* symbols defined here are available in every source file
+# as compile-time constants. Common components (health, output) use
+# #ifndef guards so they compile correctly even when a symbol is absent.
+
+menu "Commander Configuration"
+
+    # ------------------------------------------------------------------ #
+    # Identity                                                             #
+    # ------------------------------------------------------------------ #
+
+    config DEVICE_ID
+        string "Device identifier (injected into all JSON output)"
+        default "cmd_001"
+        help
+            Short unique string identifying this Commander unit.
+            Appears as "device_id" in every JSON line from output_write().
+            Keep it under 32 characters. No spaces or JSON-special characters.
+
+    # ------------------------------------------------------------------ #
+    # Buffer sizes (all static — zero heap allocation in these paths)      #
+    # ------------------------------------------------------------------ #
+
+    config OUTPUT_LINE_BUF_SIZE
+        int "Output JSON line buffer size (bytes)"
+        default 1024
+        help
+            Maximum length of one assembled output line, including the
+            envelope fields ("source", "device_id", "uptime_ms", "msg")
+            and the caller's body JSON. Increase if large scan results
+            overflow. Buffer is stack-allocated inside output_write().
+
+    config CMD_BUF_SIZE
+        int "Local command parser input buffer size (bytes)"
+        default 128
+        help
+            Static buffer for the local serial command parser (cmd.c,
+            Stage C5). Must be longer than the longest command string.
+            No dynamic allocation; sized at compile time.
+
+    config ACTION_CMD_BUF_SIZE
+        int "Action command substitution buffer size (bytes)"
+        default 512
+        help
+            Stack buffer used by the rule engine when resolving placeholder
+            values (e.g. $device.bdaddr) in action command templates.
+            Must be >= strlen(template) + strlen(largest_field_value) + 1.
+            Overflow is detected and logged; the action is skipped, not truncated.
+
+    config MAX_RULES
+        int "Maximum number of rules in the rule engine"
+        default 16
+        range 1 64
+        help
+            Maximum number of rules the rule engine can hold at runtime.
+            Rules are stored as individual NVS keys (rule_0 .. rule_N-1),
+            so this also caps NVS usage.
+            Evaluation time is O(rules * items_per_scan); keep this reasonable.
+
+    # ------------------------------------------------------------------ #
+    # Health monitor                                                       #
+    # ------------------------------------------------------------------ #
+
+    config HEALTH_TASK_STACK_SIZE
+        int "Health monitor task stack size (bytes)"
+        default 2560
+        help
+            Stack for the health monitor task. Needs enough room for
+            ESP_LOGI format strings and esp_task_wdt calls.
+            Monitor the actual watermark via the health log; reduce if > 50% unused.
+
+    config HEALTH_INTERVAL_MS
+        int "Health report interval (milliseconds)"
+        default 30000
+        help
+            How often the health task logs heap/stack metrics.
+            30 000 ms (30 s) is the default. Reduce during active debugging.
+
+    config HEALTH_FRAG_WARN_THRESH
+        int "Heap fragmentation warning threshold (percent, 0-100)"
+        default 75
+        help
+            The health task logs a warning if fragmentation exceeds this value.
+            Recalibrate upward after BT stack init (Stage C6) since Bluedroid
+            fragments the heap by design on first init.
+
+    # ------------------------------------------------------------------ #
+    # Scanner input channel                                                #
+    # ------------------------------------------------------------------ #
+
+    config SCANNER_UART_NUM
+        int "UART port number for scanner input (0, 1, or 2)"
+        default 1
+        help
+            UART peripheral receiving JSON lines from the scanner.
+            Default 1 keeps UART0 free for local command I/O and logging.
+            Pin assignments are set in board_config.h.
+
+    config SCANNER_UART_BAUD
+        int "Scanner UART baud rate"
+        default 115200
+        help
+            Must exactly match the scanner's configured output baud rate.
+            Mismatch causes framing errors; the hardened UART driver in C1
+            will detect and recover from these, but they should not occur.
+
+    # ------------------------------------------------------------------ #
+    # ESP-NOW (alternative to UART — Stage C1 option)                     #
+    # ------------------------------------------------------------------ #
+
+    config ESPNOW_ENABLED
+        bool "Enable ESP-NOW input channel instead of UART"
+        default n
+        help
+            When y, scanner_input uses ESP-NOW packets instead of UART.
+            The 4-byte fragmentation header is always prepended even for
+            payloads that fit in one packet, for forward compatibility.
+
+    config ESPNOW_REASSEMBLY_BUF_SIZE
+        int "ESP-NOW reassembly buffer size (bytes)"
+        default 2048
+        depends on ESPNOW_ENABLED
+        help
+            Buffer for reassembling fragmented ESP-NOW payloads.
+            Must be >= the largest JSON line the scanner will produce
+            (a full Wi-Fi scan with many APs can exceed 1500 bytes).
+
+    config ESPNOW_PMK
+        string "ESP-NOW pre-shared key (exactly 16 ASCII characters)"
+        default "0000000000000000"
+        depends on ESPNOW_ENABLED
+        help
+            Primary master key for ESP-NOW link encryption.
+            MUST be changed from the default before production deployment.
+            Exactly 16 ASCII characters.
+
+    # ------------------------------------------------------------------ #
+    # Logging                                                              #
+    # ------------------------------------------------------------------ #
+
+    config LOG_TO_UART1
+        bool "Route ESP_LOGx diagnostic output to UART1"
+        default n
+        help
+            When y, redirects all ESP_LOGx calls to UART1 via
+            esp_log_set_vprintf(), keeping UART0 clean for the
+            local command parser. Not yet implemented; reserved for
+            Stage C5 log-separation work.
+
+endmenu
