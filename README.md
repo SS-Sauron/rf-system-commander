@@ -121,15 +121,3 @@ This project is just getting started, and the vision is big. Whether you're into
 Let's build the most flexible, hackable, and robust ESP32 command center together.
 
 **Created with relentless attention to detail by [SS-Sauron](https://github.com/SS-Sauron).** If you think this project is cool, give it a star! ⭐
-```
-
----
-
-This README is designed to be visually engaging and informative at a glance. You can now add this file to your repository and push it to GitHub:
-
-```bash
-# In your rf_system directory
-git add README.md
-git commit -m "Add catchy README with project overview, status, and roadmap"
-git push
-```
