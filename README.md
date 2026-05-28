@@ -1,4 +1,3 @@
-```markdown
 # ⚡ RF System Commander – The Headless, Modular RF Command Center for ESP32
 
 **Stop building monolithic, fragile RF tools.** This firmware is a universal, headless command center for the ESP32. It listens to a modular scanner, evaluates user-defined rules, and triggers real-world actions—from Bluetooth AVRCP commands to Wi-Fi deauth attacks—all without a screen. Built with a plugin architecture and rigorous testing from the ground up.
@@ -26,12 +25,12 @@ The commander is built on a set of independent, reusable components.
 
 ```mermaid
 graph TD
-    A[main.c: Orchestrator] --> B(Watchdog Monitor);
+    A["main.c: Orchestrator"] --> B(Watchdog Monitor);
     A --> C[Health Monitor];
-    A --> D[Scanner Input (UART)];
-    D -->|Raw JSON Lines| E[Queue];
-    E --> F[Scan Parser (Stage C2)];
-    F --> G[Rule Engine (Stage C3)];
+    A --> D["Scanner Input (UART)"];
+    D -->|"Raw JSON Lines"| E[Queue];
+    E --> F["Scan Parser (Stage C2)"];
+    F --> G["Rule Engine (Stage C3)"];
     G --> H[Action Registry];
     H --> I(Bluetooth AVRCP);
     H --> J(Wi-Fi Deauth);
