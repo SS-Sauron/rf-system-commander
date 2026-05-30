@@ -15,18 +15,17 @@ idf_component_register(
     INCLUDE_DIRS
         "."          # exposes board_config.h to all srcs in this component
     REQUIRES
-        nvs_flash    # nvs_flash_init(), nvs_open(), nvs_set_str(), etc.
-        freertos     # FreeRTOS primitives used directly in main.c
-        log          # ESP_LOGI / ESP_LOGE in main.c
-        health       # shared health monitor component
-        output       # shared JSON output component
+        nvs_flash
+        freertos
+        log
+        health
+        output
         watchdog
-        # ---- Add as stages are implemented ----
-        esp_driver_uart       # (UART driver for scanner input)
         scan_receiver
         scan_parser
-        # Stage C3: json            (cJSON or similar for rule parsing)
-        # Stage C6: bt              (Bluedroid AVRCP controller)
+        json_utils
+        action_registry
+        rule_engine
 )
 
 # Safety flag: forbid variable-length arrays (VLAs).

@@ -46,10 +46,48 @@
 #include "watchdog.h" /* <-- new: heartbeat-based task monitoring */
 #include "scan_receiver.h"
 #include "scan_parser.h" /* <-- new: JSON envelope parser for scanner lines */
+#include "rule_engine.h"
+#include "action_registry.h"
 
 // #define SCAN_RX_QUEUE_DEPTH SCAN_RECEIVER_QUEUE_DEPTH // aliased for clarity
 
 static const char *TAG = "main";
+
+/* Temporary seed function for C3 testing — REMOVE at C5 */
+static void seed_test_rule_if_empty(void)
+{
+    nvs_handle_t h;
+    esp_err_t ret = nvs_open("rules", NVS_READWRITE, &h);
+    if (ret != ESP_OK)
+        return;
+
+    uint16_t count = 0;
+    nvs_get_u16(h, "rule_count", &count);
+
+    if (count == 0)
+    {
+        /* Rule: when bt_classic scan finds a device whose name contains
+         * "Speaker", trigger bt_media play action on that device. */
+        const char *rule_json =
+            "{\"name\":\"test_play\","
+            "\"on\":1,"
+            "\"cm\":\"bt_classic\","
+            "\"cf\":\"name\","
+            "\"co\":\"contains\","
+            "\"cv\":\"Speaker\","
+            "\"am\":\"bt_media\","
+            "\"ac\":{\"action\":\"play\",\"target\":\"$item.bdaddr\"},"
+            "\"fm\":0}";
+
+        nvs_set_str(h, "rule_0", rule_json);
+        uint16_t new_count = 1;
+        nvs_set_u16(h, "rule_count", new_count);
+        nvs_commit(h);
+        ESP_LOGI("main", "Seeded test rule_0 into NVS");
+    }
+
+    nvs_close(h);
+}
 
 /* ======================================================================
  * app_main
@@ -160,14 +198,37 @@ void app_main(void)
         esp_restart();
     }
 
-    /* event_queue is NULL until the rule engine (C3) is implemented. */
-    ret = scan_parser_init(scan_rx_queue, NULL);
+    /* ================================================================== */
+    /* f) Scan parser + Rule engine (Stage C2 / C3)                       */
+    /* ================================================================== */
+
+    /* Create the queue that carries parsed events from parser to rule engine */
+    QueueHandle_t scan_event_queue = xQueueCreate(CONFIG_RULE_ENGINE_QUEUE_DEPTH,
+                                                  sizeof(scan_event_t));
+    if (scan_event_queue == NULL)
+    {
+        ESP_LOGE(TAG, "Failed to create scan_event_queue — restarting");
+        esp_restart();
+    }
+
+    ret = scan_parser_init(scan_rx_queue, scan_event_queue);
     if (ret != ESP_OK)
     {
         output_write("{\"type\":\"fatal\",\"msg\":\"scan_parser_init failed\"}");
         ESP_LOGE(TAG, "scan_parser_init: %s", esp_err_to_name(ret));
         esp_restart();
     }
+
+    ret = rule_engine_init(scan_event_queue);
+    if (ret != ESP_OK)
+    {
+        output_write("{\"type\":\"fatal\",\"msg\":\"rule_engine_init failed\"}");
+        ESP_LOGE(TAG, "rule_engine_init: %s", esp_err_to_name(ret));
+        esp_restart();
+    }
+
+    /* ---- C3: seed test rule (remove at C5) ---- */
+    seed_test_rule_if_empty();
 
     /* ================================================================== */
     /* System ready                                                        */
