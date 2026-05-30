@@ -45,7 +45,6 @@
 #include "output.h"
 #include "watchdog.h" /* <-- new: heartbeat-based task monitoring */
 #include "scan_receiver.h"
-#include "scan_parser.h" /* <-- new: JSON envelope parser for scanner lines */
 
 // #define SCAN_RX_QUEUE_DEPTH SCAN_RECEIVER_QUEUE_DEPTH // aliased for clarity
 
@@ -114,60 +113,39 @@ void app_main(void)
     /* ================================================================== */
     /* d) Health monitor                                                   */
     /* ================================================================== */
-    /* Register with watchdog BEFORE creating the health task.
-     * This avoids the "tried to feed but is not registered" warning
-     * and guarantees the watchdog is watching from the very first
-     * heartbeat. */
-    esp_err_t wd_ret = watchdog_register_task("cmd_health", 60000);
-    if (wd_ret != ESP_OK)
-    {
-        output_write("{\"type\":\"warning\",\"msg\":\"watchdog registration for health failed\"}");
-        ESP_LOGE(TAG, "watchdog_register_task('cmd_health'): %s", esp_err_to_name(wd_ret));
-        /* Continue — the system runs without watchdog protection for the
-         * health task.  A hung health task will not be detected. */
-    }
-
+    /* Started after the watchdog so it can be registered for monitoring. */
     ret = health_monitor_start("cmd_health");
     if (ret != ESP_OK)
     {
         output_write("{\"type\":\"warning\",\"msg\":\"health monitor failed to start\"}");
         ESP_LOGE(TAG, "health_monitor_start: %s", esp_err_to_name(ret));
-        /* The watchdog was already registered but the task never started,
-         * so the watchdog will reset the device after 60 seconds.
-         * This is the safe fallback for a critical task-creation failure. */
+        /* Continue — non-fatal, but the health task won't be monitored. */
+    }
+    else
+    {
+        /* Register with watchdog only after task creation succeeded. */
+        esp_err_t wd_ret = watchdog_register_task("cmd_health", 60000);
+        if (wd_ret != ESP_OK)
+        {
+            output_write("{\"type\":\"warning\",\"msg\":\"watchdog registration for health failed\"}");
+            ESP_LOGE(TAG, "watchdog_register_task('cmd_health'): %s", esp_err_to_name(wd_ret));
+        }
     }
 
     /* ================================================================== */
-    /* e) Scanner data receiver & parser (Stages C1 / C2)                 */
+    /* e) Scanner data receiver (Stage C1)                                 */
     /* ================================================================== */
 
-    /* Create the queue that carries raw scanner lines to the parser.
-     * The same queue is used by scan_receiver (producer) and scan_parser
-     * (consumer). */
-    QueueHandle_t scan_rx_queue = xQueueCreate(SCAN_RECEIVER_QUEUE_DEPTH,
+    /* C1: no parser task yet, so pass NULL — the receiver will only echo.
+     * In C2 we will create a queue and hand it here. */
+    QueueHandle_t scan_rx_queue = xQueueCreate(SCAN_RX_QUEUE_DEPTH,
                                                SCAN_RECEIVER_LINE_BUF);
     if (scan_rx_queue == NULL)
     {
         ESP_LOGE(TAG, "Failed to create scan_rx_queue — restarting");
         esp_restart();
     }
-
     ret = scan_receiver_init(scan_rx_queue);
-    if (ret != ESP_OK)
-    {
-        output_write("{\"type\":\"fatal\",\"msg\":\"scan_receiver_init failed\"}");
-        ESP_LOGE(TAG, "scan_receiver_init: %s", esp_err_to_name(ret));
-        esp_restart();
-    }
-
-    /* event_queue is NULL until the rule engine (C3) is implemented. */
-    ret = scan_parser_init(scan_rx_queue, NULL);
-    if (ret != ESP_OK)
-    {
-        output_write("{\"type\":\"fatal\",\"msg\":\"scan_parser_init failed\"}");
-        ESP_LOGE(TAG, "scan_parser_init: %s", esp_err_to_name(ret));
-        esp_restart();
-    }
 
     /* ================================================================== */
     /* System ready                                                        */

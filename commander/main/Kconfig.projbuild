@@ -25,12 +25,30 @@ menu "Commander Configuration"
 
     config OUTPUT_LINE_BUF_SIZE
         int "Output JSON line buffer size (bytes)"
-        default 1024
+        default 2048
         help
             Maximum length of one assembled output line, including the
             envelope fields ("source", "device_id", "uptime_ms", "msg")
             and the caller's body JSON. Increase if large scan results
             overflow. Buffer is stack-allocated inside output_write().
+
+    # ---- Scan Parser (Stage C2) ----------------------------------------------
+    config SCAN_PARSER_TASK_STACK_SIZE
+        int "Parser task stack size (bytes)"
+        default 4096
+        help
+            Stack size for the scan parser task. Increase if stack overflow is detected.
+    config SCAN_PARSER_WATCHDOG_INTERVAL_MS
+        int "Parser watchdog heartbeat max interval (ms)"
+        default 10000
+        help
+            Maximum interval between watchdog heartbeats for the scan parser task.
+
+    config SCAN_PARSER_DATA_BUF_SIZE
+        int "Parser internal data[] buffer size (bytes)"
+        default 800
+        help
+            Internal buffer size for the scan parser task. Increase if data overflow is detected.
 
     config CMD_BUF_SIZE
         int "Local command parser input buffer size (bytes)"
