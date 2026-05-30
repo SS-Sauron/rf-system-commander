@@ -24,6 +24,7 @@ idf_component_register(
         # ---- Add as stages are implemented ----
         esp_driver_uart       # (UART driver for scanner input)
         scan_receiver
+        scan_parser
         # Stage C3: json            (cJSON or similar for rule parsing)
         # Stage C6: bt              (Bluedroid AVRCP controller)
 )

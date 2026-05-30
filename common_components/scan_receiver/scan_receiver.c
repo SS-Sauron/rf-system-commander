@@ -23,7 +23,7 @@ static const char *TAG = "scan_receiver";
 
 // Debug echo: set 0 to disable the scan_received wrapper line
 #ifndef CONFIG_SCAN_RECEIVER_DEBUG_ECHO
-#define CONFIG_SCAN_RECEIVER_DEBUG_ECHO 1
+#define CONFIG_SCAN_RECEIVER_DEBUG_ECHO 0
 #endif
 
 // Line buffer for accumulating received characters
