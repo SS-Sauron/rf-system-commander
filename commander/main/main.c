@@ -48,12 +48,13 @@
 #include "scan_parser.h" /* <-- new: JSON envelope parser for scanner lines */
 #include "rule_engine.h"
 #include "action_registry.h"
+#include "dummy_action.h"
 
 // #define SCAN_RX_QUEUE_DEPTH SCAN_RECEIVER_QUEUE_DEPTH // aliased for clarity
 
 static const char *TAG = "main";
 
-/* Temporary seed function for C3 testing — REMOVE at C5 */
+/* Temporary seed function for C4 testing — REMOVE at C5 */
 static void seed_test_rule_if_empty(void)
 {
     nvs_handle_t h;
@@ -66,10 +67,21 @@ static void seed_test_rule_if_empty(void)
 
     if (count == 0)
     {
-        /* Rule: when bt_classic scan finds a device whose name contains
-         * "Speaker", trigger bt_media play action on that device. */
-        const char *rule_json =
-            "{\"name\":\"test_play\","
+        /* Rule 0: targets "dummy" (the module we actually register) */
+        const char *rule0_json =
+            "{\"name\":\"test_dummy\","
+            "\"on\":1,"
+            "\"cm\":\"bt_classic\","
+            "\"cf\":\"name\","
+            "\"co\":\"contains\","
+            "\"cv\":\"Speaker\","
+            "\"am\":\"dummy\","
+            "\"ac\":{\"action\":\"play\",\"target\":\"$item.bdaddr\"},"
+            "\"fm\":0}";
+
+        /* Rule 1: targets "bt_media" (not yet registered, for error test) */
+        const char *rule1_json =
+            "{\"name\":\"test_bt\","
             "\"on\":1,"
             "\"cm\":\"bt_classic\","
             "\"cf\":\"name\","
@@ -79,11 +91,12 @@ static void seed_test_rule_if_empty(void)
             "\"ac\":{\"action\":\"play\",\"target\":\"$item.bdaddr\"},"
             "\"fm\":0}";
 
-        nvs_set_str(h, "rule_0", rule_json);
-        uint16_t new_count = 1;
+        nvs_set_str(h, "rule_0", rule0_json);
+        nvs_set_str(h, "rule_1", rule1_json);
+        uint16_t new_count = 2;
         nvs_set_u16(h, "rule_count", new_count);
         nvs_commit(h);
-        ESP_LOGI("main", "Seeded test rule_0 into NVS");
+        ESP_LOGI("main", "Seeded 2 test rules into NVS (rule_0 -> dummy, rule_1 -> bt_media)");
     }
 
     nvs_close(h);
@@ -176,12 +189,8 @@ void app_main(void)
     }
 
     /* ================================================================== */
-    /* e) Scanner data receiver & parser (Stages C1 / C2)                 */
+    /* e) Scanner input queue                                              */
     /* ================================================================== */
-
-    /* Create the queue that carries raw scanner lines to the parser.
-     * The same queue is used by scan_receiver (producer) and scan_parser
-     * (consumer). */
     QueueHandle_t scan_rx_queue = xQueueCreate(SCAN_RECEIVER_QUEUE_DEPTH,
                                                SCAN_RECEIVER_LINE_BUF);
     if (scan_rx_queue == NULL)
@@ -190,6 +199,20 @@ void app_main(void)
         esp_restart();
     }
 
+    /* ================================================================== */
+    /* f) Scan event queue                                                 */
+    /* ================================================================== */
+    QueueHandle_t scan_event_queue = xQueueCreate(CONFIG_RULE_ENGINE_QUEUE_DEPTH,
+                                                  sizeof(scan_event_t));
+    if (scan_event_queue == NULL)
+    {
+        ESP_LOGE(TAG, "Failed to create scan_event_queue — restarting");
+        esp_restart();
+    }
+
+    /* ================================================================== */
+    /* g) Scan receiver (C1)                                               */
+    /* ================================================================== */
     ret = scan_receiver_init(scan_rx_queue);
     if (ret != ESP_OK)
     {
@@ -199,18 +222,31 @@ void app_main(void)
     }
 
     /* ================================================================== */
-    /* f) Scan parser + Rule engine (Stage C2 / C3)                       */
+    /* h) Action registry and test rules (C4) — BEFORE rule engine        */
     /* ================================================================== */
+    /* Seed test rules into NVS so the rule engine finds them on first boot. */
+    seed_test_rule_if_empty();
 
-    /* Create the queue that carries parsed events from parser to rule engine */
-    QueueHandle_t scan_event_queue = xQueueCreate(CONFIG_RULE_ENGINE_QUEUE_DEPTH,
-                                                  sizeof(scan_event_t));
-    if (scan_event_queue == NULL)
+    /* Initialise the action registry and register the dummy module. */
+    ret = action_registry_init();
+    if (ret != ESP_OK)
     {
-        ESP_LOGE(TAG, "Failed to create scan_event_queue — restarting");
+        output_write("{\"type\":\"fatal\",\"msg\":\"action_registry_init failed\"}");
+        ESP_LOGE(TAG, "action_registry_init: %s", esp_err_to_name(ret));
         esp_restart();
     }
 
+    ret = action_registry_register(&dummy_action_module);
+    if (ret != ESP_OK)
+    {
+        output_write("{\"type\":\"warning\",\"msg\":\"dummy action module registration failed\"}");
+        ESP_LOGE(TAG, "action_registry_register(dummy): %s", esp_err_to_name(ret));
+        /* Continue — the system runs without the dummy module. */
+    }
+
+    /* ================================================================== */
+    /* i) Scan parser (C2)                                                 */
+    /* ================================================================== */
     ret = scan_parser_init(scan_rx_queue, scan_event_queue);
     if (ret != ESP_OK)
     {
@@ -219,6 +255,9 @@ void app_main(void)
         esp_restart();
     }
 
+    /* ================================================================== */
+    /* j) Rule engine (C3) — MUST be last infrastructure init             */
+    /* ================================================================== */
     ret = rule_engine_init(scan_event_queue);
     if (ret != ESP_OK)
     {
@@ -226,9 +265,6 @@ void app_main(void)
         ESP_LOGE(TAG, "rule_engine_init: %s", esp_err_to_name(ret));
         esp_restart();
     }
-
-    /* ---- C3: seed test rule (remove at C5) ---- */
-    seed_test_rule_if_empty();
 
     /* ================================================================== */
     /* System ready                                                        */

@@ -26,6 +26,7 @@ idf_component_register(
         json_utils
         action_registry
         rule_engine
+        dummy_action
 )
 
 # Safety flag: forbid variable-length arrays (VLAs).

@@ -210,4 +210,12 @@ menu "Commander Configuration"
         int "Maximum number of placeholders per command template"
         default 4
 
+    config MAX_ACTION_MODULES
+        int "Maximum number of registerable action modules"
+        default 8
+        help
+            Number of action module slots in the static registry.
+            Each slot holds one pointer (4 bytes). 8 is sufficient for
+            dummy, bt_media, gpio, and wifi_deauth with spare slots.
+
 endmenu
