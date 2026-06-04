@@ -46,9 +46,9 @@
  *
  * ---- Volume control -------------------------------------------------------
  *
- * On AVRCP connect, query capabilities. If ESP_AVRC_RN_VOLUME_CHANGE is
- * supported, use esp_avrc_ct_send_set_absolute_volume_cmd (0–127).
- * Otherwise update s_volume locally and log only (passthrough fallback).
+ * C6 volume passthrough change: use AVRCP VOL_UP/VOL_DOWN passthrough when
+ * the remote Target advertises Category 2. Fall back to absolute volume when
+ * passthrough volume is not supported.
  *
  * ---- Thread safety --------------------------------------------------------
  *
@@ -147,6 +147,8 @@ typedef struct
 
 static volatile bt_media_state_t s_state = BT_MEDIA_STATE_DISCONNECTED;
 static volatile bool s_abs_vol_supported = false;
+/* C6 volume passthrough change: remote Target Category 2 supports VOL_UP/DOWN passthrough. */
+static volatile bool s_passthrough_vol_supported = false;
 static esp_bd_addr_t s_connected_addr;
 static uint8_t s_volume = BT_VOLUME_DEFAULT;
 static uint8_t s_tl = 0;
@@ -253,9 +255,36 @@ static void apply_volume_change(int delta)
     }
     s_volume = (uint8_t)new_vol;
 
-    ESP_LOGD(TAG, "Volume %s → %d/127", delta > 0 ? "up" : "down", s_volume);
+    /* C6 volume passthrough change: prefer key events so the phone volume slider moves. */
+    if (s_passthrough_vol_supported)
+    {
+        uint8_t op = (delta > 0) ? ESP_AVRC_PT_CMD_VOL_UP
+                                 : ESP_AVRC_PT_CMD_VOL_DOWN;
 
-    if (s_abs_vol_supported && s_state == BT_MEDIA_STATE_CONNECTED)
+        ESP_LOGI(TAG, "Passthrough volume %s", (delta > 0) ? "up" : "down");
+
+        s_tl = (uint8_t)BT_TL_NEXT(s_tl);
+        esp_err_t ret = esp_avrc_ct_send_passthrough_cmd(
+            s_tl, op, ESP_AVRC_PT_CMD_STATE_PRESSED);
+        if (ret != ESP_OK)
+        {
+            ESP_LOGW(TAG, "Passthrough volume PRESSED failed (%s)",
+                     esp_err_to_name(ret));
+            return;
+        }
+
+        vTaskDelay(pdMS_TO_TICKS(100));
+
+        s_tl = (uint8_t)BT_TL_NEXT(s_tl);
+        ret = esp_avrc_ct_send_passthrough_cmd(
+            s_tl, op, ESP_AVRC_PT_CMD_STATE_RELEASED);
+        if (ret != ESP_OK)
+        {
+            ESP_LOGW(TAG, "Passthrough volume RELEASED failed (%s)",
+                     esp_err_to_name(ret));
+        }
+    }
+    else if (s_abs_vol_supported && s_state == BT_MEDIA_STATE_CONNECTED)
     {
         s_tl = (uint8_t)BT_TL_NEXT(s_tl);
         esp_err_t ret = esp_avrc_ct_send_set_absolute_volume_cmd(s_tl, s_volume);
@@ -309,15 +338,27 @@ static void bt_a2d_callback(esp_a2d_cb_event_t event,
             s_state = BT_MEDIA_STATE_CONNECTED;
             s_volume = BT_VOLUME_DEFAULT;
             s_abs_vol_supported = false;
+            /* C6 volume passthrough change: reset stale peer capability state. */
+            s_passthrough_vol_supported = false;
             ESP_LOGI(TAG, "A2DP connected to %s (conn_hdl=%u, mtu=%u)",
                      addr, (unsigned)s_conn_hdl, (unsigned)s_audio_mtu);
 
+            /* Media stream not started – AVRCP works without it.
+             * If the remote device disconnects, enable the media stream later
+             * with pre‑encoded silence.
+             *
+             * AVRCP passthrough uses its own AVCTP channel independent of the
+             * A2DP AVDTP media stream. Keeping the stream idle avoids internal
+             * SBC encoder allocations; an external-codec silence stream can be
+             * enabled later if a remote device drops idle A2DP. */
+            /*
             esp_err_t ret = esp_a2d_media_ctrl(ESP_A2D_MEDIA_CTRL_START);
             if (ret != ESP_OK)
             {
                 ESP_LOGW(TAG, "A2DP media start failed: %s",
                          esp_err_to_name(ret));
             }
+            */
             break;
 
         case ESP_A2D_CONNECTION_STATE_DISCONNECTING:
@@ -378,6 +419,8 @@ static void bt_avrc_ct_callback(esp_avrc_ct_cb_event_t event,
              * accidentally used for a future connection to a different device.
              * Confirmed correct behaviour from ESP-IDF example code. */
             s_abs_vol_supported = false;
+            /* C6 volume passthrough change: reset stale peer capability state. */
+            s_passthrough_vol_supported = false;
             ESP_LOGI(TAG, "AVRCP disconnected");
         }
         break;
@@ -421,8 +464,13 @@ static void bt_avrc_ct_callback(esp_avrc_ct_cb_event_t event,
         break;
 
     case ESP_AVRC_CT_REMOTE_FEATURES_EVT:
-        ESP_LOGI(TAG, "AVRCP remote features: 0x%04X",
-                 param->rmt_feats.feat_mask);
+        /* C6 volume passthrough change: Category 2 = Basic Passthrough. */
+        s_passthrough_vol_supported =
+            (param->rmt_feats.tg_feat_flag & ESP_AVRC_FEAT_FLAG_CAT2) != 0;
+        ESP_LOGI(TAG, "AVRCP remote features: 0x%04X, TG features: 0x%04X, passthrough vol %s",
+                 (unsigned)param->rmt_feats.feat_mask,
+                 (unsigned)param->rmt_feats.tg_feat_flag,
+                 s_passthrough_vol_supported ? "SUPPORTED" : "not supported");
         break;
 
     default:
@@ -499,12 +547,14 @@ static void process_command(const bt_media_cmd_t *cmd)
         }
         format_bd_addr(s_connected_addr, addr, sizeof(addr));
         ESP_LOGI(TAG, "Disconnecting from %s", addr);
+        /*
         esp_err_t ret = esp_a2d_media_ctrl(ESP_A2D_MEDIA_CTRL_SUSPEND);
         if (ret != ESP_OK)
         {
             ESP_LOGW(TAG, "A2DP media suspend before disconnect failed: %s",
                      esp_err_to_name(ret));
         }
+        */
         esp_a2d_source_disconnect(s_connected_addr);
         if (!wait_for_state(BT_MEDIA_STATE_DISCONNECTED, BT_DISCONNECT_TIMEOUT_MS))
         {
@@ -717,6 +767,8 @@ static esp_err_t bt_media_init(void)
 
     s_state = BT_MEDIA_STATE_DISCONNECTED;
     s_abs_vol_supported = false;
+    /* C6 volume passthrough change: reset stale peer capability state. */
+    s_passthrough_vol_supported = false;
     s_volume = BT_VOLUME_DEFAULT;
     s_conn_hdl = 0;
     s_audio_mtu = 0;
@@ -737,12 +789,14 @@ static esp_err_t bt_media_deinit(void)
         char addr[BD_ADDR_STR_LEN];
         format_bd_addr(s_connected_addr, addr, sizeof(addr));
         ESP_LOGI(TAG, "Disconnecting from %s before deinit", addr);
+        /*
         esp_err_t ret = esp_a2d_media_ctrl(ESP_A2D_MEDIA_CTRL_SUSPEND);
         if (ret != ESP_OK)
         {
             ESP_LOGW(TAG, "A2DP media suspend before deinit failed: %s",
                      esp_err_to_name(ret));
         }
+        */
         esp_a2d_source_disconnect(s_connected_addr);
         wait_for_state(BT_MEDIA_STATE_DISCONNECTED, BT_DISCONNECT_TIMEOUT_MS);
     }
@@ -768,6 +822,8 @@ static esp_err_t bt_media_deinit(void)
 
     s_state = BT_MEDIA_STATE_DISCONNECTED;
     s_abs_vol_supported = false;
+    /* C6 volume passthrough change: reset stale peer capability state. */
+    s_passthrough_vol_supported = false;
     s_volume = BT_VOLUME_DEFAULT;
     s_conn_hdl = 0;
     s_audio_mtu = 0;

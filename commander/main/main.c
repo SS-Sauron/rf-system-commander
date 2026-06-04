@@ -49,58 +49,10 @@
 #include "rule_engine.h"
 #include "action_registry.h"
 #include "dummy_action.h"
-
-// #define SCAN_RX_QUEUE_DEPTH SCAN_RECEIVER_QUEUE_DEPTH // aliased for clarity
+#include "command_parser.h"
+#include "bt_media_action.h"
 
 static const char *TAG = "main";
-
-/* Temporary seed function for C4 testing — REMOVE at C5 */
-static void seed_test_rule_if_empty(void)
-{
-    nvs_handle_t h;
-    esp_err_t ret = nvs_open("rules", NVS_READWRITE, &h);
-    if (ret != ESP_OK)
-        return;
-
-    uint16_t count = 0;
-    nvs_get_u16(h, "rule_count", &count);
-
-    if (count == 0)
-    {
-        /* Rule 0: targets "dummy" (the module we actually register) */
-        const char *rule0_json =
-            "{\"name\":\"test_dummy\","
-            "\"on\":1,"
-            "\"cm\":\"bt_classic\","
-            "\"cf\":\"name\","
-            "\"co\":\"contains\","
-            "\"cv\":\"Speaker\","
-            "\"am\":\"dummy\","
-            "\"ac\":{\"action\":\"play\",\"target\":\"$item.bdaddr\"},"
-            "\"fm\":0}";
-
-        /* Rule 1: targets "bt_media" (not yet registered, for error test) */
-        const char *rule1_json =
-            "{\"name\":\"test_bt\","
-            "\"on\":1,"
-            "\"cm\":\"bt_classic\","
-            "\"cf\":\"name\","
-            "\"co\":\"contains\","
-            "\"cv\":\"Speaker\","
-            "\"am\":\"bt_media\","
-            "\"ac\":{\"action\":\"play\",\"target\":\"$item.bdaddr\"},"
-            "\"fm\":0}";
-
-        nvs_set_str(h, "rule_0", rule0_json);
-        nvs_set_str(h, "rule_1", rule1_json);
-        uint16_t new_count = 2;
-        nvs_set_u16(h, "rule_count", new_count);
-        nvs_commit(h);
-        ESP_LOGI("main", "Seeded 2 test rules into NVS (rule_0 -> dummy, rule_1 -> bt_media)");
-    }
-
-    nvs_close(h);
-}
 
 /* ======================================================================
  * app_main
@@ -152,13 +104,9 @@ void app_main(void)
     /* ================================================================== */
     /* c) Watchdog monitor                                                 */
     /* ================================================================== */
-    /* The dedicated watchdog monitor task (watchdog_task) must be running
-     * before any task it monitors. It feeds the hardware TWDT and checks
-     * heartbeats from all registered tasks.
-     *
-     * Registrations for individual tasks are done AFTER the corresponding
-     * task has been created successfully, to avoid monitoring a task that
-     * never starts. */
+    /* Registrations for individual tasks are done BEFORE the corresponding
+     * task is created. If task creation fails, the orphaned registration
+     * eventually triggers a reset — acceptable for critical failures. */
     watchdog_start();
     ESP_LOGI(TAG, "Watchdog monitor started");
 
@@ -224,8 +172,6 @@ void app_main(void)
     /* ================================================================== */
     /* h) Action registry and test rules (C4) — BEFORE rule engine        */
     /* ================================================================== */
-    /* Seed test rules into NVS so the rule engine finds them on first boot. */
-    seed_test_rule_if_empty();
 
     /* Initialise the action registry and register the dummy module. */
     ret = action_registry_init();
@@ -236,6 +182,9 @@ void app_main(void)
         esp_restart();
     }
 
+    /* Register the dummy action module, which provides a simple test action
+     * that always succeeds. This allows us to write rules that have a
+     * visible effect without needing to implement real actions first. */
     ret = action_registry_register(&dummy_action_module);
     if (ret != ESP_OK)
     {
@@ -244,9 +193,24 @@ void app_main(void)
         /* Continue — the system runs without the dummy module. */
     }
 
+    /* Stage C6: register the Bluetooth AVRCP action module.
+     * Registration is non-fatal — if Bluetooth is unavailable, the
+     * module stays unavailable and rules targeting "bt_media" will
+     * return not_available. */
+    ret = action_registry_register(&bt_media_action_module);
+    if (ret != ESP_OK)
+    {
+        ESP_LOGW("main", "bt_media registration failed: %s — continuing",
+                 esp_err_to_name(ret));
+    }
+
     /* ================================================================== */
     /* i) Scan parser (C2)                                                 */
     /* ================================================================== */
+    /* Converts raw scanner JSON lines (from scan_rx_queue) into
+     * structured scan_event_t items and pushes them into scan_event_queue.
+     * Must be started before the rule engine so events are flowing when
+     * the rule engine begins its evaluation loop. */
     ret = scan_parser_init(scan_rx_queue, scan_event_queue);
     if (ret != ESP_OK)
     {
@@ -258,6 +222,9 @@ void app_main(void)
     /* ================================================================== */
     /* j) Rule engine (C3) — MUST be last infrastructure init             */
     /* ================================================================== */
+    /* Loads rules from NVS, then blocks on scan_event_queue, evaluating
+     * every incoming event.  At this point the action registry must already
+     * contain all registered modules; otherwise actions will fail. */
     ret = rule_engine_init(scan_event_queue);
     if (ret != ESP_OK)
     {
@@ -267,10 +234,26 @@ void app_main(void)
     }
 
     /* ================================================================== */
+    /* k) Command parser (Stage C5)                                        */
+    /* ================================================================== */
+    /* Starts the interactive operator console on UART2.  Must be
+     * initialised after the rule engine so that RULE ADD/DELETE/etc.
+     * can modify the in‑memory rule table. */
+    ret = command_parser_init();
+    if (ret != ESP_OK)
+    {
+        output_write("{\"type\":\"fatal\",\"msg\":\"command_parser_init failed\"}");
+        ESP_LOGE(TAG, "command_parser_init: %s", esp_err_to_name(ret));
+        esp_restart();
+    }
+
+    /* ================================================================== */
     /* System ready                                                        */
     /* ================================================================== */
     /* First structured JSON line on the output stream. The host parser
-     * uses this to detect a fresh boot and resync its state. */
+     * uses this to detect a fresh boot and resync its state. No
+     * initialisation code may appear after this point — all subsystems
+     * are up. */
     ret = output_write("{\"type\":\"boot\",\"status\":\"ready\"}");
     if (ret != ESP_OK)
     {

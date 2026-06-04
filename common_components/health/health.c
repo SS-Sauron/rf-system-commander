@@ -5,32 +5,30 @@
  * COMPONENT LOCATION: common_components/health/
  *
  * Configuration knobs (set via project Kconfig or fall back to defaults):
- *   CONFIG_HEALTH_TASK_STACK_SIZE  — stack in bytes  (default 4096)
+ *   CONFIG_HEALTH_TASK_STACK_SIZE  — stack in bytes  (default 2560)
  *   CONFIG_HEALTH_INTERVAL_MS      — report period   (default 30000)
  *   CONFIG_HEALTH_FRAG_WARN_THRESH — frag % as int   (default 75)
  *
  * Using #ifndef guards so the component compiles correctly even when
  * included in a project that has not defined these symbols.
- *
- * Watchdog integration:
- *   This task does NOT feed the hardware TWDT directly.
- *   Instead, the dedicated watchdog monitoring task (common_components/watchdog/)
- *   watches all registered tasks by heartbeats. After each health report,
- *   we signal the watchdog via watchdog_feed_task().
  */
 
 #include "health.h"
-#include "watchdog.h" // <-- new: heartbeat API
 
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
 #include "esp_heap_caps.h"
 #include "esp_log.h"
+#include "watchdog.h"
+#include "esp_timer.h" /* esp_timer_get_time() — added at C5 */
+
+#include <stdio.h>  /* snprintf */
+#include <string.h> /* strlen */
 
 /* ---- Compile-time defaults (override via project Kconfig) ------------- */
 
 #ifndef CONFIG_HEALTH_TASK_STACK_SIZE
-#define CONFIG_HEALTH_TASK_STACK_SIZE 4096
+#define CONFIG_HEALTH_TASK_STACK_SIZE 2560
 #endif
 
 #ifndef CONFIG_HEALTH_INTERVAL_MS
@@ -57,9 +55,24 @@ static void health_task(void *arg)
 {
     const char *tag = (const char *)arg;
 
+    /* This task does NOT subscribe to the hardware Task Watchdog Timer.
+     * Instead it relies on the project's software watchdog monitor.
+     *
+     * Feeding the software watchdog ensures that if this task hangs,
+     * the dedicated monitor task will detect the missing heartbeat
+     * after the configured max interval and reset the system.
+     *
+     * This approach keeps the hardware TWDT exclusively for the
+     * monitor task itself, as mandated by the project's watchdog
+     * lifecycle standard (C4). */
+
     while (1)
     {
-        esp_rom_printf("health: alive\n");
+        /* Feed the software watchdog FIRST each cycle.  If a later call
+         * within this loop hangs, the monitor will have already been
+         * petted, so it can still detect the stall. */
+        watchdog_feed_task(tag);
+
         /* ---- Heap metrics -------------------------------------------- */
         uint32_t free_heap = esp_get_free_heap_size();
         uint32_t largest_free = (uint32_t)heap_caps_get_largest_free_block(MALLOC_CAP_DEFAULT);
@@ -94,15 +107,10 @@ static void health_task(void *arg)
                      frag_pct);
         }
 
-        /* ---- Heartbeat: tell the watchdog monitor we are alive -------- */
-        watchdog_feed_task(tag); // uses the same string as passed by caller
-
         vTaskDelay(pdMS_TO_TICKS(CONFIG_HEALTH_INTERVAL_MS));
     }
 
-    /* Unreachable under normal operation. Clean up if ever reached.
-     * The watchdog monitor handles system resets; we just delete self. */
-    vTaskDelete(NULL);
+    /* Unreachable — the task runs forever. No cleanup needed. */
 }
 
 /* ---- Public API ------------------------------------------------------- */
@@ -117,7 +125,7 @@ esp_err_t health_monitor_start(const char *log_tag)
     if (s_started)
     {
         /* Caller error: double-start. Log and return — do NOT create a
-         * second task; duplicate registrations corrupt the watchdog. */
+         * second task; duplicate TWDT registrations corrupt the watchdog. */
         ESP_LOGW(log_tag, "health_monitor_start called more than once — ignored");
         return ESP_ERR_INVALID_STATE;
     }
@@ -140,5 +148,61 @@ esp_err_t health_monitor_start(const char *log_tag)
     }
 
     s_started = true;
+    return ESP_OK;
+}
+
+/* ======================================================================
+ * C5 Snapshot API
+ * ====================================================================== */
+
+esp_err_t health_get_snapshot(char *buffer, size_t buf_size)
+{
+    if (buffer == NULL || buf_size == 0)
+    {
+        return ESP_ERR_INVALID_ARG;
+    }
+
+    /* ---- Heap metrics ---- */
+    uint32_t free_heap = esp_get_free_heap_size();
+    uint32_t largest_free = (uint32_t)heap_caps_get_largest_free_block(MALLOC_CAP_DEFAULT);
+    int64_t uptime_ms = esp_timer_get_time() / 1000LL;
+
+    /* ---- Task state (static buffer — single-caller contract) ---------- */
+    /* TaskStatus_t requires configUSE_TRACE_FACILITY=1 (ESP-IDF default).
+     * Array raised to 24 at C6 to accommodate bt_media_task and any future
+     * internal BT stack tasks that appear under uxTaskGetSystemState.
+     * Caller (command_parser_task) is the only user; no concurrent access.*/
+    static TaskStatus_t s_tasks[24];
+    UBaseType_t task_count = uxTaskGetSystemState(s_tasks, 24, NULL);
+
+    size_t pos = 0;
+    int w;
+
+    w = snprintf(buffer + pos, buf_size - pos,
+                 "Uptime: %lld ms\r\n"
+                 "Heap free: %lu | Largest block: %lu\r\n"
+                 "Tasks (%u):\r\n",
+                 (long long)uptime_ms,
+                 (unsigned long)free_heap,
+                 (unsigned long)largest_free,
+                 (unsigned)task_count);
+    if (w > 0 && pos + (size_t)w < buf_size)
+    {
+        pos += (size_t)w;
+    }
+
+    for (UBaseType_t i = 0; i < task_count && pos < buf_size - 1; i++)
+    {
+        w = snprintf(buffer + pos, buf_size - pos,
+                     "  %-16s prio=%-2u hwm=%u\r\n",
+                     s_tasks[i].pcTaskName,
+                     (unsigned)s_tasks[i].uxCurrentPriority,
+                     (unsigned)s_tasks[i].usStackHighWaterMark);
+        if (w > 0 && pos + (size_t)w < buf_size)
+        {
+            pos += (size_t)w;
+        }
+    }
+
     return ESP_OK;
 }

@@ -103,6 +103,13 @@ static const char *TAG = "rule_engine";
 /* Task priority: above scan_parser (3), below watchdog. */
 #define RULE_ENGINE_TASK_PRIORITY   4
 
+/* Operator enum → string table. Index matches rule_operator_t values 0..4.
+ * Used in load logging, get_all_rules, and rule_serialize_json. */
+static const char * const s_op_names[] = {
+    "eq", "ne", "contains", "gt", "lt"
+};
+#define S_OP_COUNT  5   /* number of valid entries in s_op_names */
+
 /* ======================================================================
  * Internal types
  * ====================================================================== */
@@ -506,15 +513,12 @@ static void load_rules_from_nvs(void)
             ESP_LOGW(TAG, "Rule %u: parse failed — slot inactive", i);
             s_rules[i].active = false;
         } else {
-            static const char * const op_names[] = {
-                "eq", "ne", "contains", "gt", "lt", "?"
-            };
-            uint8_t op_idx = (s_rules[i].cond_op <= RULE_OP_LESS_THAN)
-                             ? (uint8_t)s_rules[i].cond_op : 5U;
+            uint8_t op_idx = (uint8_t)((s_rules[i].cond_op < S_OP_COUNT)
+                                       ? s_rules[i].cond_op : 0U);
             ESP_LOGI(TAG, "Rule %u: '%s'  %s.%s %s '%s'  -> %s",
                      i, s_rules[i].name,
                      s_rules[i].cond_module, s_rules[i].cond_field,
-                     op_names[op_idx],
+                     s_op_names[op_idx],
                      s_rules[i].cond_value,
                      s_rules[i].act_module);
             loaded++;
@@ -706,4 +710,382 @@ esp_err_t rule_engine_deinit(void)
     s_initialized = false;
     ESP_LOGI(TAG, "Rule engine stopped");
     return ESP_OK;
+}
+
+/* ======================================================================
+ * C5 Rule Management API
+ * ====================================================================== */
+
+/* ---- Internal serializer (not exposed in header) ---------------------- */
+
+/**
+ * Regenerate the compact NVS JSON for a rule from its struct fields.
+ * Output format matches the input format expected by parse_rule_json().
+ * The act_cmd_tmpl field is already a JSON object string ({...}); it is
+ * embedded directly as a nested value, not as a quoted string.
+ *
+ * Called while holding s_rule_mutex (snprintf only, no I/O — safe).
+ * Also called from rule_engine_add_rule to validate round-trip before
+ * NVS write; in that path the mutex is NOT held.
+ */
+static esp_err_t rule_serialize_json(const rule_t *r, char *buf, size_t sz)
+{
+    if (r == NULL || buf == NULL || sz == 0) { return ESP_ERR_INVALID_ARG; }
+
+    const char *op_str = (r->cond_op < S_OP_COUNT)
+                         ? s_op_names[r->cond_op] : "eq";
+
+    int w = snprintf(buf, sz,
+        "{\"name\":\"%s\","
+        "\"on\":%d,"
+        "\"cm\":\"%s\","
+        "\"cf\":\"%s\","
+        "\"co\":\"%s\","
+        "\"cv\":\"%s\","
+        "\"am\":\"%s\","
+        "\"ac\":%s,"
+        "\"fm\":%d}",
+        r->name,
+        r->active ? 1 : 0,
+        r->cond_module,
+        r->cond_field,
+        op_str,
+        r->cond_value,          /* always quoted as string — parse_rule_json
+                                 * accepts both quoted and unquoted cv */
+        r->act_module,
+        r->act_cmd_tmpl,        /* already a JSON object; embed directly */
+        r->fire_all_matches ? 1 : 0);
+
+    if (w < 0 || w >= (int)sz) { return ESP_ERR_INVALID_SIZE; }
+    return ESP_OK;
+}
+
+/* ---- NVS open/close helpers ------------------------------------------ */
+
+static esp_err_t nvs_open_rules(nvs_open_mode_t mode, nvs_handle_t *h)
+{
+    esp_err_t ret = nvs_open(RULES_NVS_NAMESPACE, mode, h);
+    if (ret != ESP_OK) {
+        ESP_LOGW(TAG, "nvs_open('%s') failed: %s",
+                 RULES_NVS_NAMESPACE, esp_err_to_name(ret));
+    }
+    return ret;
+}
+
+/* ---- rule_engine_add_rule -------------------------------------------- */
+
+esp_err_t rule_engine_add_rule(const char *json, int *out_index)
+{
+    if (json == NULL || out_index == NULL) { return ESP_ERR_INVALID_ARG; }
+
+    /* Step 1: Parse and validate the JSON before touching the mutex.
+     * parse_rule_json reads s_rule_json_buf so we must copy first. */
+    size_t jlen = strnlen(json, RULE_JSON_BUF_LEN);
+    if (jlen == 0 || jlen >= RULE_JSON_BUF_LEN) {
+        return ESP_ERR_INVALID_ARG;
+    }
+
+    /* Use a local stack copy so s_rule_json_buf remains free for NVS ops. */
+    rule_t new_rule;
+    esp_err_t ret = parse_rule_json(json, jlen, &new_rule);
+    if (ret != ESP_OK) {
+        ESP_LOGW(TAG, "add_rule: JSON parse failed: %s", esp_err_to_name(ret));
+        return ret;
+    }
+
+    /* Step 2: Find first free slot under mutex.
+     * Free = name[0] == '\0' (slot never filled, or previously deleted). */
+    if (xSemaphoreTake(s_rule_mutex, pdMS_TO_TICKS(100)) != pdTRUE) {
+        return ESP_ERR_TIMEOUT;
+    }
+    int free_idx = -1;
+    for (int i = 0; i < CONFIG_MAX_RULES; i++) {
+        if (s_rules[i].name[0] == '\0') { free_idx = i; break; }
+    }
+    xSemaphoreGive(s_rule_mutex);
+
+    if (free_idx < 0) {
+        ESP_LOGW(TAG, "add_rule: rule table full (%d slots)", CONFIG_MAX_RULES);
+        return ESP_ERR_NO_MEM;
+    }
+
+    /* Step 3: Write to NVS OUTSIDE mutex.
+     * If this fails we return the error; the in-memory slot stays free. */
+    char key[RULES_NVS_KEY_MAX_LEN];
+    snprintf(key, sizeof(key), RULES_NVS_KEY_FMT, (unsigned)free_idx);
+
+    nvs_handle_t h;
+    ret = nvs_open_rules(NVS_READWRITE, &h);
+    if (ret != ESP_OK) { return ret; }
+
+    ret = nvs_set_str(h, key, json);
+    if (ret == ESP_OK) {
+        /* Update high-water-mark count if this index extends the range. */
+        uint16_t count = 0;
+        nvs_get_u16(h, RULES_NVS_COUNT_KEY, &count);
+        if ((uint16_t)(free_idx + 1) > count) {
+            nvs_set_u16(h, RULES_NVS_COUNT_KEY, (uint16_t)(free_idx + 1));
+        }
+        ret = nvs_commit(h);
+    }
+    nvs_close(h);
+
+    if (ret != ESP_OK) {
+        ESP_LOGW(TAG, "add_rule: NVS write failed: %s", esp_err_to_name(ret));
+        return ret;
+    }
+
+    /* Step 4: Populate in-memory slot under mutex.
+     * Double-check the slot is still free (future-proof for multi-writer). */
+    if (xSemaphoreTake(s_rule_mutex, pdMS_TO_TICKS(100)) != pdTRUE) {
+        /* NVS has the rule; memory does not. Self-corrects on next reboot. */
+        ESP_LOGE(TAG, "add_rule: second mutex timeout — NVS/RAM desync until reboot");
+        return ESP_ERR_TIMEOUT;
+    }
+    if (s_rules[free_idx].name[0] != '\0') {
+        /* Slot was taken between our two lock windows (shouldn't happen at C5). */
+        xSemaphoreGive(s_rule_mutex);
+        return ESP_ERR_INVALID_STATE;
+    }
+    memcpy(&s_rules[free_idx], &new_rule, sizeof(rule_t));
+    xSemaphoreGive(s_rule_mutex);
+
+    *out_index = free_idx;
+    ESP_LOGI(TAG, "Rule added at index %d: '%s'", free_idx, new_rule.name);
+    return ESP_OK;
+}
+
+/* ---- rule_engine_delete_rule ----------------------------------------- */
+
+esp_err_t rule_engine_delete_rule(int index)
+{
+    if (index < 0 || index >= CONFIG_MAX_RULES) { return ESP_ERR_INVALID_ARG; }
+
+    /* Clear in-memory slot first (under mutex). */
+    if (xSemaphoreTake(s_rule_mutex, pdMS_TO_TICKS(100)) != pdTRUE) {
+        return ESP_ERR_TIMEOUT;
+    }
+    if (s_rules[index].name[0] == '\0') {
+        xSemaphoreGive(s_rule_mutex);
+        return ESP_ERR_NOT_FOUND;
+    }
+    char deleted_name[CONFIG_RULE_NAME_LEN];
+    strlcpy(deleted_name, s_rules[index].name, sizeof(deleted_name));
+    memset(&s_rules[index], 0, sizeof(rule_t));   /* name[0] = '\0' → free */
+    xSemaphoreGive(s_rule_mutex);
+
+    /* Erase NVS key OUTSIDE mutex. */
+    char key[RULES_NVS_KEY_MAX_LEN];
+    snprintf(key, sizeof(key), RULES_NVS_KEY_FMT, (unsigned)index);
+
+    nvs_handle_t h;
+    if (nvs_open_rules(NVS_READWRITE, &h) == ESP_OK) {
+        nvs_erase_key(h, key);      /* non-fatal if key was already absent */
+        nvs_commit(h);
+        nvs_close(h);
+    }
+
+    ESP_LOGI(TAG, "Rule %d ('%s') deleted", index, deleted_name);
+    return ESP_OK;
+}
+
+/* ---- rule_engine_set_enabled ----------------------------------------- */
+
+esp_err_t rule_engine_set_enabled(int index, bool enabled)
+{
+    if (index < 0 || index >= CONFIG_MAX_RULES) { return ESP_ERR_INVALID_ARG; }
+
+    if (xSemaphoreTake(s_rule_mutex, pdMS_TO_TICKS(100)) != pdTRUE) {
+        return ESP_ERR_TIMEOUT;
+    }
+    if (s_rules[index].name[0] == '\0') {
+        xSemaphoreGive(s_rule_mutex);
+        return ESP_ERR_NOT_FOUND;
+    }
+
+    s_rules[index].active = enabled;
+
+    /* Serialize the updated rule to the shared NVS buffer.
+     * snprintf inside the mutex is fine — no blocking I/O. */
+    esp_err_t ser = rule_serialize_json(&s_rules[index],
+                                        s_rule_json_buf,
+                                        sizeof(s_rule_json_buf));
+    xSemaphoreGive(s_rule_mutex);
+
+    if (ser != ESP_OK) {
+        ESP_LOGW(TAG, "set_enabled: serialize failed, NVS not updated");
+        return ser;
+    }
+
+    /* Write to NVS OUTSIDE mutex. */
+    char key[RULES_NVS_KEY_MAX_LEN];
+    snprintf(key, sizeof(key), RULES_NVS_KEY_FMT, (unsigned)index);
+
+    nvs_handle_t h;
+    esp_err_t ret = nvs_open_rules(NVS_READWRITE, &h);
+    if (ret != ESP_OK) { return ret; }
+
+    ret = nvs_set_str(h, key, s_rule_json_buf);
+    if (ret == ESP_OK) { ret = nvs_commit(h); }
+    nvs_close(h);
+
+    ESP_LOGI(TAG, "Rule %d %s", index, enabled ? "enabled" : "disabled");
+    return ret;
+}
+
+/* ---- rule_engine_get_all_rules --------------------------------------- */
+
+esp_err_t rule_engine_get_all_rules(char *buffer, size_t buf_size)
+{
+    if (buffer == NULL || buf_size == 0) { return ESP_ERR_INVALID_ARG; }
+
+    if (xSemaphoreTake(s_rule_mutex, pdMS_TO_TICKS(100)) != pdTRUE) {
+        return ESP_ERR_TIMEOUT;
+    }
+
+    size_t pos   = 0;
+    int    count = 0;
+
+    for (int i = 0; i < CONFIG_MAX_RULES; i++) {
+        const rule_t *r = &s_rules[i];
+        if (r->name[0] == '\0') { continue; }   /* free slot */
+
+        uint8_t op_idx = (uint8_t)((r->cond_op < S_OP_COUNT)
+                                   ? r->cond_op : 0U);
+        int w = snprintf(buffer + pos, buf_size - pos,
+            "[%d] '%s' | %s.%s %s '%s' -> %s | %s\r\n",
+            i,
+            r->name,
+            r->cond_module, r->cond_field,
+            s_op_names[op_idx],
+            r->cond_value,
+            r->act_module,
+            r->active ? "enabled" : "disabled");
+
+        if (w <= 0 || pos + (size_t)w >= buf_size) { break; }
+        pos  += (size_t)w;
+        count++;
+    }
+
+    /* Summary line. */
+    snprintf(buffer + pos, buf_size - pos, "Total: %d rule(s)\r\n", count);
+
+    xSemaphoreGive(s_rule_mutex);
+    return ESP_OK;
+}
+
+/* ---- rule_engine_test_event ------------------------------------------ */
+
+esp_err_t rule_engine_test_event(const char *event_json,
+                                 char *buffer, size_t buf_size)
+{
+    if (event_json == NULL || buffer == NULL || buf_size == 0) {
+        return ESP_ERR_INVALID_ARG;
+    }
+
+    size_t ej_len = strlen(event_json);
+
+    /* Extract "module" field from event JSON. */
+    char ev_module[32] = {0};
+    if (!json_get_string_field(event_json, ej_len, "module",
+                               ev_module, sizeof(ev_module))) {
+        snprintf(buffer, buf_size, "ERROR: event missing 'module' field\r\n");
+        return ESP_ERR_INVALID_ARG;
+    }
+
+    /* Extract "data" array as a raw substring (includes '[' and ']'). */
+    const char *data_start = NULL;
+    size_t      data_len   = 0;
+    if (!json_get_raw_field(event_json, ej_len, "data",
+                            &data_start, &data_len)) {
+        snprintf(buffer, buf_size, "ERROR: event missing 'data' field\r\n");
+        return ESP_ERR_INVALID_ARG;
+    }
+    if (data_start == NULL || data_len < 2 || data_start[0] != '[') {
+        snprintf(buffer, buf_size, "ERROR: 'data' is not an array\r\n");
+        return ESP_ERR_INVALID_ARG;
+    }
+
+    /* Evaluate against all enabled rules — dry run (no dispatch). */
+    if (xSemaphoreTake(s_rule_mutex, pdMS_TO_TICKS(100)) != pdTRUE) {
+        return ESP_ERR_TIMEOUT;
+    }
+
+    size_t pos       = 0;
+    int    fire_count = 0;
+
+    for (int ri = 0; ri < CONFIG_MAX_RULES; ri++) {
+        const rule_t *r = &s_rules[ri];
+        if (!r->active)                              { continue; }
+        if (strcmp(r->cond_module, ev_module) != 0)  { continue; }
+
+        /* Inline O(N) item cursor — mirrors evaluate_event. */
+        const char *arr     = data_start;
+        const char *arr_end = data_start + data_len;
+        const char *p       = arr;
+
+        p = json_skip_ws(p, arr_end);
+        if (p >= arr_end || *p != '[') { continue; }
+        p++;
+
+        while (p < arr_end) {
+            p = json_skip_ws(p, arr_end);
+            if (p >= arr_end || *p == ']') { break; }
+
+            const char *item_start = p;
+            if (!json_skip_value(&p, arr_end)) { break; }
+            size_t item_len = (size_t)(p - item_start);
+
+            char field_val[CONFIG_RULE_CONDITION_VALUE_LEN + 16];
+            if (json_get_string_field(item_start, item_len,
+                                      r->cond_field,
+                                      field_val, sizeof(field_val))) {
+
+                if (eval_condition(field_val, r->cond_op, r->cond_value)) {
+                    /* Resolve placeholders for display in s_resolved[]. */
+                    bool ok = resolve_placeholders(r->act_cmd_tmpl,
+                                                   item_start, item_len,
+                                                   s_resolved,
+                                                   CONFIG_ACTION_CMD_BUF_SIZE);
+                    int w = snprintf(buffer + pos, buf_size - pos,
+                        "MATCH: Rule %d ('%s') -> %s %s\r\n",
+                        ri, r->name, r->act_module,
+                        ok ? s_resolved : "(placeholder overflow)");
+                    if (w > 0 && pos + (size_t)w < buf_size) {
+                        pos += (size_t)w;
+                    }
+                    fire_count++;
+                    if (!r->fire_all_matches) { break; }
+                }
+            }
+
+            p = json_skip_ws(p, arr_end);
+            if (p < arr_end && *p == ',') { p++; }
+        }
+    }
+
+    if (fire_count == 0) {
+        snprintf(buffer + pos, buf_size - pos, "No rules would fire.\r\n");
+    } else {
+        snprintf(buffer + pos, buf_size - pos,
+                 "%d rule(s) would fire.\r\n", fire_count);
+    }
+
+    xSemaphoreGive(s_rule_mutex);
+    return ESP_OK;
+}
+
+/* ---- rule_engine_get_count ------------------------------------------- */
+
+int rule_engine_get_count(void)
+{
+    if (xSemaphoreTake(s_rule_mutex, pdMS_TO_TICKS(100)) != pdTRUE) {
+        return -1;
+    }
+    int count = 0;
+    for (int i = 0; i < CONFIG_MAX_RULES; i++) {
+        if (s_rules[i].name[0] != '\0') { count++; }
+    }
+    xSemaphoreGive(s_rule_mutex);
+    return count;
 }

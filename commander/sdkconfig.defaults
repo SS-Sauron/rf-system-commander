@@ -38,24 +38,28 @@ CONFIG_UART_ISR_IN_IRAM=y
 # ---- NVS ---------------------------------------------------------
 CONFIG_NVS_FLASH_VERIFY_ERASE=y
 
-# ---- Bluetooth: Bluedroid Classic only ---------------------------
-# Bluedroid is the stack for AVRCP controller mode (Stage C6).
-# BLE (both Bluedroid BLE and NimBLE) is disabled — the commander
-# has no BLE use-case. This saves ~60 KB of RAM vs. a dual-mode build.
-#
-# ACL_CONNECTIONS=1: the commander connects to exactly one speaker
-# at a time. Lowering from the default of 4 saves ~40 KB of RAM in
-# the Bluedroid connection management structures.
+# ---- Bluetooth (Classic, AVRCP/A2DP media control) ---------------
+# Bluedroid Classic Bluetooth only — no BLE. Used by the bt_media
+# action module (Stage C6) to send AVRCP commands (play, pause,
+# volume) to a single target speaker.
+# A2DP source is enabled because many speakers gate AVRCP behind an
+# active A2DP connection; AVRCP controller is explicitly enabled
+# for command transmission.
+# ACL_CONNECTIONS=1: single‑device connection, saves ~40 KB RAM vs.
+# the default of 4.
+# Task/queue/watchdog defaults for the bt_media internal task.
 CONFIG_BT_ENABLED=y
 CONFIG_BT_BLUEDROID_ENABLED=y
 CONFIG_BT_CLASSIC_ENABLED=y
 CONFIG_BT_BLE_ENABLED=n
 # CONFIG_BT_NIMBLE_ENABLED is not set (NimBLE not used on commander)
-CONFIG_BT_ACL_CONNECTIONS=1
-
-# NOTE: AVRCP-specific Kconfig (CONFIG_BT_AVRCP_CT_ENABLE etc.) will
-# be added at Stage C6 when bt_media_action.c is implemented, once
-# the exact symbol names are confirmed against the target ESP-IDF version.
+CONFIG_BT_ACL_CONNECTIONS=2
+CONFIG_BT_A2DP_ENABLE=y
+CONFIG_BT_AVRCP_ENABLE=y
+CONFIG_BT_AVRCP_CT_ENABLE=y
+CONFIG_BT_MEDIA_TASK_STACK_SIZE=6144
+CONFIG_BT_MEDIA_QUEUE_DEPTH=4
+CONFIG_BT_MEDIA_WDT_INTERVAL_MS=5000
 
 # ---- Core dump: enabled for development --------------------------
 # Disable and enable Secure Boot V2 at Stage C7 for production.
@@ -66,3 +70,13 @@ CONFIG_ESP_COREDUMP_CHECKSUM_CRC32=y
 # ---- Adding custom partitions ------------------------------------
 CONFIG_PARTITION_TABLE_CUSTOM=y
 CONFIG_PARTITION_TABLE_CUSTOM_FILENAME="partitions.csv"
+
+# ---- Command line interface ------------------------------------
+CONFIG_CMD_LINE_MAX=256
+CONFIG_CMD_UART_RX_PIN=22
+CONFIG_CMD_UART_TX_PIN=19
+CONFIG_CMD_UART_BAUD=115200
+CONFIG_CMD_RESP_BUF_SIZE=2048
+
+# ---- Debugging ------------------------------------
+CONFIG_FREERTOS_USE_TRACE_FACILITY=y

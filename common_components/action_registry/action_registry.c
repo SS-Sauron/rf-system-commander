@@ -232,3 +232,26 @@ esp_err_t action_registry_execute(const char *module_name,
      * The registry only emits output on error paths. */
     return exec_ret;
 }
+
+/* ======================================================================
+ * C5 Accessor API
+ * ====================================================================== */
+
+int action_registry_get_module_count(void)
+{
+    /* s_module_count is only written during boot-time registration;
+     * safe to read without a lock from any task afterwards. */
+    return (int)s_module_count;
+}
+
+const action_module_t *action_registry_get_module(const char *name)
+{
+    if (name == NULL) { return NULL; }
+    for (int i = 0; i < (int)s_module_count; i++) {
+        if (s_modules[i] != NULL &&
+            strcmp(s_modules[i]->name, name) == 0) {
+            return s_modules[i];
+        }
+    }
+    return NULL;
+}

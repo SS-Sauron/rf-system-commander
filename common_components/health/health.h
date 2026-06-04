@@ -44,6 +44,22 @@ extern "C" {
  */
 esp_err_t health_monitor_start(const char *log_tag);
 
+/**
+ * @brief Fill a caller-provided buffer with a human-readable health snapshot.
+ *
+ * Writes uptime, free heap, largest free block, and the stack high-water
+ * mark for each FreeRTOS task (up to 16 tasks). Uses a static internal
+ * TaskStatus_t array — not thread-safe for concurrent callers, but safe
+ * when called exclusively from command_parser_task.
+ *
+ * @param buffer    Caller-allocated output buffer.
+ * @param buf_size  Size of buffer in bytes.
+ *
+ * @return  ESP_OK              Snapshot written.
+ *          ESP_ERR_INVALID_ARG buffer is NULL or buf_size is 0.
+ */
+esp_err_t health_get_snapshot(char *buffer, size_t buf_size);
+
 #ifdef __cplusplus
 }
 #endif

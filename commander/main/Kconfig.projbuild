@@ -167,8 +167,6 @@ menu "Commander Configuration"
             local command parser. Not yet implemented; reserved for
             Stage C5 log-separation work.
 
-    # ---- Rule Engine (Stage C3) ----------------------------------------------
-
     config RULE_ENGINE_TASK_STACK_SIZE
         int "Rule engine task stack size (bytes)"
         default 4096
@@ -193,22 +191,35 @@ menu "Commander Configuration"
         help
             Time the rule engine blocks waiting for events before feeding
             the watchdog. Must be less than RULE_ENGINE_WDT_INTERVAL_MS.
+            Must be less than or equal to RULE_ENGINE_WDT_INTERVAL_MS / 10.
 
     config RULE_NAME_LEN
         int "Maximum rule name length (including null)"
         default 32
+        help
+            Maximum length of a rule name string, including the null terminator.
+            Rule names are used in logs and must be unique. Keep them short.
 
     config RULE_CONDITION_VALUE_LEN
         int "Maximum condition value string length"
         default 64
+        help
+            Maximum length of a condition value string in the rule engine.
 
     config RULE_CMD_TMPL_LEN
         int "Maximum stored action command template length"
         default 256
+        help
+            Maximum length of the command template string stored in NVS for each rule.
+            Must be <= ACTION_CMD_BUF_SIZE to ensure it can be fully resolved at runtime.
 
     config RULE_MAX_PLACEHOLDERS
         int "Maximum number of placeholders per command template"
         default 4
+        help
+            Maximum number of $placeholders allowed in an action command template.
+            Placeholders are resolved at runtime with actual values from the scan event.
+            This limit keeps the action command substitution logic manageable and bounded.
 
     config MAX_ACTION_MODULES
         int "Maximum number of registerable action modules"
@@ -216,6 +227,54 @@ menu "Commander Configuration"
         help
             Number of action module slots in the static registry.
             Each slot holds one pointer (4 bytes). 8 is sufficient for
-            dummy, bt_media, gpio, and wifi_deauth with spare slots.
-
+            dummy, bt_media, gpio, and wifi_deauth with spare slots.        
+    config CMD_LINE_MAX
+        int "Maximum command line length"
+        default 256
+        help
+            Maximum length of a command line received by the local command parser.
+            Must be <= CMD_BUF_SIZE and <= ACTION_CMD_BUF_SIZE to avoid truncation.
+    config CMD_UART_RX_PIN
+        int "Command UART RX pin"
+        default 22
+        help
+            GPIO number for receiving local serial commands. Default 18 keeps it
+            separate from the scanner UART RX pin (17) and avoids the bootstrapping
+            issues of using UART0. Pin assignments are set in board_config.h.
+    config CMD_UART_TX_PIN
+        int "Command UART TX pin"
+        default 19
+        help
+            GPIO number for transmitting local serial command responses. Default 17
+            keeps it separate from the scanner UART TX pin (16) and avoids the
+            bootstrapping issues of using UART0. Pin assignments are set in board_config.h.
+    config CMD_UART_BAUD
+        int "Command UART baud rate"
+        default 115200
+        help
+            Baud rate for the local command parser UART. Must match the baud rate
+            of the terminal or system sending commands to this UART.
+    config CMD_RESP_BUF_SIZE
+        int "Command parser response buffer size (bytes)"
+        default 2048
+        help
+            Buffer size for assembling responses in the local command parser.
+            Must be large enough for the longest expected response, including
+            JSON formatting overhead. Stack-allocated in cmd.c.
+    config BT_MEDIA_TASK_STACK_SIZE
+    int "bt_media internal task stack (bytes)"
+        default 6144
+        help
+            6144 is the minimum for Bluedroid + AVRCP call chains.
+            Increase to 8192 if stack overflow occurs during heavy BT use.
+    config BT_MEDIA_QUEUE_DEPTH
+        int "bt_media command queue depth"
+        default 4
+        help
+            Number of command_t items the bt_media action module's queue can hold.
+    config BT_MEDIA_WDT_INTERVAL_MS
+        int "bt_media watchdog max heartbeat interval (ms)"
+        default 5000
+        help
+            Maximum interval (in milliseconds) between heartbeats from the bt_media action module.
 endmenu

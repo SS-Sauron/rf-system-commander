@@ -51,6 +51,8 @@
 #include "esp_err.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/queue.h"
+#include <stdbool.h>
+#include <stddef.h>
 
 #ifdef __cplusplus
 extern "C" {
@@ -89,6 +91,105 @@ esp_err_t rule_engine_init(QueueHandle_t event_queue);
  * @return ESP_OK on success, ESP_ERR_INVALID_STATE if not initialised.
  */
 esp_err_t rule_engine_deinit(void);
+
+/* ======================================================================
+ * Rule Management API  (added at C5 for the command parser)
+ *
+ * All functions that modify s_rules[] acquire s_rule_mutex for the
+ * in-memory operation. NVS writes happen OUTSIDE the mutex so that the
+ * evaluation task is not blocked during flash I/O.
+ *
+ * "Free slot" detection: a slot is free when name[0] == '\0'.
+ *   active=true,  name[0]!='\0' → occupied and enabled
+ *   active=false, name[0]!='\0' → occupied but disabled (RULE DISABLE)
+ *   active=false, name[0]=='\0' → free (never used, or deleted)
+ * ====================================================================== */
+
+/**
+ * @brief Add a new rule from a JSON string.
+ *
+ * Parses and validates json, finds the first free slot in the in-memory
+ * table, writes to NVS, then populates the slot. Two separate mutex
+ * acquisitions keep the mutex hold time short and NVS I/O outside.
+ *
+ * @param json       Null-terminated rule JSON (compact NVS format).
+ * @param out_index  Set to the assigned rule index on success.
+ *
+ * @return  ESP_OK              Rule added.
+ *          ESP_ERR_INVALID_ARG json is NULL or fails parse/validation.
+ *          ESP_ERR_NO_MEM      Rule table is full (all slots occupied).
+ *          ESP_ERR_TIMEOUT     Mutex acquisition timed out.
+ *          (NVS error)         JSON validated but NVS write failed.
+ */
+esp_err_t rule_engine_add_rule(const char *json, int *out_index);
+
+/**
+ * @brief Delete the rule at the given index.
+ *
+ * Clears the in-memory slot (name[0]='\0') and erases the NVS key.
+ *
+ * @return  ESP_OK              Deleted (or NVS erase failed but memory cleared).
+ *          ESP_ERR_INVALID_ARG index out of range.
+ *          ESP_ERR_NOT_FOUND   Slot was already free.
+ *          ESP_ERR_TIMEOUT     Mutex acquisition timed out.
+ */
+esp_err_t rule_engine_delete_rule(int index);
+
+/**
+ * @brief Enable or disable the rule at the given index.
+ *
+ * Updates the active flag in memory and re-serialises the rule to NVS
+ * with the updated "on" field. Does not affect the rule's other fields.
+ *
+ * @param enabled  true = enable, false = disable.
+ *
+ * @return  ESP_OK              Updated.
+ *          ESP_ERR_INVALID_ARG index out of range.
+ *          ESP_ERR_NOT_FOUND   Slot is free (no rule at that index).
+ *          ESP_ERR_TIMEOUT     Mutex acquisition timed out.
+ *          ESP_ERR_INVALID_SIZE Serialized JSON too large for buffer.
+ */
+esp_err_t rule_engine_set_enabled(int index, bool enabled);
+
+/**
+ * @brief Format a human-readable summary of all occupied rule slots.
+ *
+ * Acquires the mutex, iterates s_rules[], and writes formatted lines
+ * into buffer. Thread-safe; safe to call from command_parser_task.
+ *
+ * @param buffer    Caller-provided output buffer.
+ * @param buf_size  Size of buffer in bytes.
+ *
+ * @return  ESP_OK on success, ESP_ERR_TIMEOUT on mutex timeout.
+ */
+esp_err_t rule_engine_get_all_rules(char *buffer, size_t buf_size);
+
+/**
+ * @brief Evaluate an ad-hoc event JSON against all enabled rules (dry run).
+ *
+ * Does NOT dispatch any actions. Reports which rules would fire and what
+ * commands would be sent.
+ *
+ * Event JSON format: {"module":"<name>","data":[{...},{...}]}
+ * The "type" field is not required (unlike the full scan_result envelope).
+ *
+ * @param event_json  Null-terminated event JSON string.
+ * @param buffer      Caller-provided output buffer for the report.
+ * @param buf_size    Size of buffer in bytes.
+ *
+ * @return  ESP_OK on success, ESP_ERR_INVALID_ARG if JSON is malformed.
+ */
+esp_err_t rule_engine_test_event(const char *event_json,
+                                 char *buffer, size_t buf_size);
+
+/**
+ * @brief Return the number of occupied (non-free) rule slots.
+ *
+ * Counts slots where name[0] != '\0' (both enabled and disabled rules).
+ *
+ * @return Number of occupied slots, or -1 on mutex timeout.
+ */
+int rule_engine_get_count(void);
 
 #ifdef __cplusplus
 }

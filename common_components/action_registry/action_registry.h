@@ -205,6 +205,25 @@ esp_err_t action_registry_register(action_module_t *module);
 esp_err_t action_registry_execute(const char *module_name,
                                   const char *command_json);
 
+/* ======================================================================
+ * Accessor API  (added at C5 for STATUS and GET_STATUS commands)
+ * ====================================================================== */
+
+/**
+ * @brief Return the number of registered modules (including unavailable ones).
+ * No locking needed — s_module_count is written only during init-time
+ * registration, which completes before any task that calls this function.
+ */
+int action_registry_get_module_count(void);
+
+/**
+ * @brief Find a registered module by name.
+ *
+ * @param name  Module name to look up (e.g. "dummy", "bt_media").
+ * @return Pointer to the module, or NULL if not registered.
+ */
+const action_module_t *action_registry_get_module(const char *name);
+
 #ifdef __cplusplus
 }
 #endif
