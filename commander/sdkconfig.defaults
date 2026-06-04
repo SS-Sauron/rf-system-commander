@@ -80,3 +80,6 @@ CONFIG_CMD_RESP_BUF_SIZE=2048
 
 # ---- Debugging ------------------------------------
 CONFIG_FREERTOS_USE_TRACE_FACILITY=y
+
+# --- bluetooth ------------------------------------
+CONFIG_BT_L2CAP_ENABLE=y
