@@ -277,4 +277,14 @@ menu "Commander Configuration"
         default 5000
         help
             Maximum interval (in milliseconds) between heartbeats from the bt_media action module.
+    config BLE_HID_DEVICE_NAME
+        string "BLE HID device name"
+        default "Commander Remote"
+        help
+            Name shown to phones when pairing.
+    config BLE_HID_TASK_STACK_SIZE
+        int "BLE HID task stack size"
+        default 4096
+        help
+            Stack for the internal BLE HID task.
 endmenu

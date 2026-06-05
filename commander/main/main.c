@@ -51,7 +51,6 @@
 #include "dummy_action.h"
 #include "command_parser.h"
 #include "bt_media_action.h"
-
 static const char *TAG = "main";
 
 /* ======================================================================
