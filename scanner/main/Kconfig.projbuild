@@ -1,0 +1,67 @@
+# scanner/main/Kconfig.projbuild
+
+menu "Scanner Configuration"
+
+    config SCANNER_DEVICE_ID
+        string "Scanner device identifier (embedded in output JSON)"
+        default "scan_001"
+        help
+            Short unique string identifying this scanner unit.
+            Appears in the output_write envelope as device_id.
+
+    config SCANNER_CMD_UART_RX_PIN
+        int "Local console UART RX pin (UART2)"
+        default 18
+        help
+            GPIO pin for the local command console receive line.
+
+    config SCANNER_CMD_UART_TX_PIN
+        int "Local console UART TX pin (UART2)"
+        default 21
+        help
+            GPIO pin for the local command console transmit line.
+
+    config SCANNER_CMD_UART_BAUD
+        int "Local console UART baud rate"
+        default 115200
+
+    config SCANNER_DATA_UART_TX_PIN
+        int "Data link UART TX pin (UART1, to Commander)"
+        default 17
+        help
+            Connects to Commander UART1 RX (GPIO16 on Commander board).
+
+    config SCANNER_DATA_UART_RX_PIN
+        int "Data link UART RX pin (UART1, from Commander)"
+        default 16
+        help
+            Connects to Commander UART1 TX (GPIO17 on Commander board).
+            Used to receive scanner_cmd JSON objects from the Commander.
+
+    config SCANNER_DATA_UART_BAUD
+        int "Data link UART baud rate"
+        default 115200
+
+    config SCANNER_DUMMY_SCAN_INTERVAL_MS
+        int "Dummy BLE scan event interval (ms)"
+        default 5000
+        help
+            Period between synthetic scan_result JSON lines sent to the
+            Commander while BLE scanning is active.
+
+    config SCANNER_CONSOLE_LINE_MAX
+        int "Maximum local console input line length (bytes)"
+        default 256
+        help
+            Stack-allocated in scanner_console_task. Increase if very long
+            commands are expected; decrease to save stack.
+            
+    config SCANNER_UART_NUM
+        int "Scanner data UART number"
+        default 1
+
+    config SCANNER_UART_BAUD
+        int "Scanner data UART baud rate"
+        default 115200
+
+endmenu

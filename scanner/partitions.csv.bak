@@ -1,0 +1,9 @@
+# scanner/partitions.csv
+# Copied from commander/partitions.csv — identical layout.
+#
+# Name,       Type,  SubType,   Offset,    Size,     Flags
+nvs,          data,  nvs,       0x9000,    0x6000,
+nvs_backup,   data,  nvs,       0xF000,    0x6000,
+phy_init,     data,  phy,       0x15000,   0x1000,
+factory,      app,   factory,   0x16000,   0x170000,
+coredump,     data,  coredump,  0x186000,  0x10000,

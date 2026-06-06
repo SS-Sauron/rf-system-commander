@@ -1,0 +1,42 @@
+# scanner/sdkconfig.defaults
+
+# ---- Compiler & heap -------------------------------------------------------
+CONFIG_COMPILER_OPTIMIZATION_PERF=y
+CONFIG_HEAP_POISONING_LIGHT=y
+
+# ---- Hardware Task Watchdog -------------------------------------------------
+# The software watchdog monitor task feeds the hardware TWDT on behalf of all
+# registered tasks. The 5 s hardware timeout is a last-resort safety net.
+CONFIG_ESP_TASK_WDT_EN=y
+CONFIG_ESP_TASK_WDT_TIMEOUT_S=5
+CONFIG_ESP_TASK_WDT_CHECK_IDLE_TASK_CPU0=n
+CONFIG_ESP_TASK_WDT_CHECK_IDLE_TASK_CPU1=n
+
+# ---- UART ------------------------------------------------------------------
+CONFIG_UART_ISR_IN_IRAM=y
+
+# ---- NVS -------------------------------------------------------------------
+CONFIG_NVS_FLASH_VERIFY_ERASE=y
+
+# ---- Partition table -------------------------------------------------------
+CONFIG_PARTITION_TABLE_CUSTOM=y
+CONFIG_PARTITION_TABLE_CUSTOM_FILENAME="partitions.csv"
+
+# ---- Bluetooth / Wi-Fi (disabled — scanner has no radio) -------------------
+CONFIG_BT_ENABLED=n
+CONFIG_WIFI_ENABLED=n
+
+# ---- FreeRTOS trace facility -----------------------------------------------
+# Required for uxTaskGetSystemState() used in health_get_snapshot().
+CONFIG_FREERTOS_USE_TRACE_FACILITY=y
+
+# ---- Scanner Kconfig defaults ----------------------------------------------
+CONFIG_SCANNER_DEVICE_ID="scan_001"
+CONFIG_SCANNER_CMD_UART_RX_PIN=18
+CONFIG_SCANNER_CMD_UART_TX_PIN=21
+CONFIG_SCANNER_CMD_UART_BAUD=115200
+CONFIG_SCANNER_DATA_UART_TX_PIN=17
+CONFIG_SCANNER_DATA_UART_RX_PIN=16
+CONFIG_SCANNER_DATA_UART_BAUD=115200
+CONFIG_SCANNER_DUMMY_SCAN_INTERVAL_MS=5000
+CONFIG_SCANNER_CONSOLE_LINE_MAX=256
